@@ -1,0 +1,22 @@
+{
+  "name": "cognitive-enhancement-support-tool",
+  "version": "1.0.0",
+  "description": "Full-stack Mental Health and Cognitive Enhancement web application for individuals and clinicians",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "nodemon server/server.js",
+    "client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "build": "npm run build --prefix client"
+  },
+  "keywords": [
+    "mental-health",
+    "cognitive-enhancement",
+    "react",
+    "express",
+    "mongodb"
+  ],
+  "author": "CEST Team",
+  "license": "ISC"
+}

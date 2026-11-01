@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply font-sans bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 selection:bg-brand-500 selection:text-white;
+  }
+}
+
+/* Custom Glassmorphism styles */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.dark .glass-panel {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(30, 41, 59, 0.8);
+}
+
+.glass-nav {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.dark .glass-nav {
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+
+/* ========================================================
+   PRINT STYLESHEET (Reports & Clinical Patient Summaries)
+   ======================================================== */
+@media print {
+  /* Hide non-printable UI elements */
+  nav,
+  header.glass-nav,
+  button,
+  .no-print,
+  .glass-nav,
+  ::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  /* Reset body and container backgrounds to clean white */
+  body,
+  html,
+  #root,
+  .dark body,
+  .dark {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 11pt !important;
+    line-height: 1.4 !important;
+  }
+
+  #cest-printable-report,
+  .print-report-canvas {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  /* Dark mode overrides during print */
+  .dark .print-report-canvas,
+  .dark .report-scale-block,
+  .dark .bg-slate-850,
+  .dark .bg-slate-900,
+  .dark .bg-slate-800,
+  .dark .bg-slate-950 {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  .dark text,
+  .dark .text-white {
+    fill: #0f172a !important;
+    color: #0f172a !important;
+  }
+
+  /* Prevent awkward page breaks */
+  .report-section {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin-bottom: 24pt !important;
+  }
+
+  .report-keep-together,
+  .report-scale-block {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  table {
+    page-break-inside: auto !important;
+    border-collapse: collapse !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  /* Borders and rules */
+  .border,
+  .border-b,
+  .border-t,
+  .divide-y > * {
+    border-color: #cbd5e1 !important;
+  }
+
+  /* Ensure SVG vectors and fills are preserved */
+  svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+}
