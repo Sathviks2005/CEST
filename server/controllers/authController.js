@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const { OAuth2Client } = require('google-auth-library');
+const mongoose = require('mongoose');
 const User = require('../models/User');
+const Otp = require('../models/Otp');
 const generateToken = require('../utils/generateToken');
 const { sendEmail } = require('../utils/sendEmail');
 const {
@@ -10,6 +12,211 @@ const {
 
 // In-memory user store fallback for zero-dependency local testing if Mongo is offline
 const inMemoryUsers = [];
+const inMemoryOtps = new Map();
+
+const isDbConnected = () => mongoose.connection.readyState === 1;
+
+// @desc    Send 6-digit authentication code (OTP) for registration
+// @route   POST /api/auth/send-otp
+// @access  Public
+const sendRegistrationOtp = async (req, res, next) => {
+  try {
+    const {
+      name,
+      email,
+      role,
+      registrationNumber,
+      registeringBody,
+    } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an email address',
+      });
+    }
+
+    const emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+    if (!emailRegex.test(email.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address',
+      });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const selectedRole = role === 'clinician' ? 'clinician' : 'self_user';
+
+    // 1. Check if user already exists
+    if (isDbConnected()) {
+      try {
+        const existingUser = await User.findOne({ email: cleanEmail });
+        if (existingUser) {
+          return res.status(400).json({
+            success: false,
+            message: 'An account with this email already exists. Please sign in instead.',
+          });
+        }
+      } catch (e) {
+        const memExisting = inMemoryUsers.find((u) => u.email === cleanEmail);
+        if (memExisting) {
+          return res.status(400).json({
+            success: false,
+            message: 'An account with this email already exists. Please sign in instead.',
+          });
+        }
+      }
+    } else {
+      const memExisting = inMemoryUsers.find((u) => u.email === cleanEmail);
+      if (memExisting) {
+        return res.status(400).json({
+          success: false,
+          message: 'An account with this email already exists. Please sign in instead.',
+        });
+      }
+    }
+
+    // 2. Clinician registration number validation if clinician
+    if (selectedRole === 'clinician' && registrationNumber) {
+      const valRes = validateRegistrationNumber(registrationNumber);
+      if (!valRes.valid) {
+        return res.status(400).json({
+          success: false,
+          message: valRes.message,
+        });
+      }
+      const cleanRegNum = valRes.value || '';
+      const cleanBody = sanitizeRegisteringBody(registeringBody);
+
+      if (isDbConnected()) {
+        try {
+          const duplicate = await User.findOne({
+            registrationNumber: cleanRegNum,
+            registeringBody: cleanBody || { $in: ['', null, undefined] },
+          });
+          if (duplicate) {
+            return res.status(400).json({
+              success: false,
+              message:
+                'This professional registration number is already linked to another account.',
+            });
+          }
+        } catch (e) {
+          const memDup = inMemoryUsers.find(
+            (u) =>
+              u.registrationNumber === cleanRegNum &&
+              (u.registeringBody || '') === cleanBody
+          );
+          if (memDup) {
+            return res.status(400).json({
+              success: false,
+              message:
+                'This professional registration number is already linked to another account.',
+            });
+          }
+        }
+      } else {
+        const memDup = inMemoryUsers.find(
+          (u) =>
+            u.registrationNumber === cleanRegNum &&
+            (u.registeringBody || '') === cleanBody
+        );
+        if (memDup) {
+          return res.status(400).json({
+            success: false,
+            message:
+              'This professional registration number is already linked to another account.',
+          });
+        }
+      }
+    }
+
+    // 3. Generate random 6-digit numeric verification code
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // 4. Save to DB (or fallback to memory)
+    if (isDbConnected()) {
+      try {
+        await Otp.deleteMany({ email: cleanEmail });
+        await Otp.create({
+          email: cleanEmail,
+          otp,
+          expiresAt,
+          attempts: 0,
+        });
+      } catch (dbErr) {
+        inMemoryOtps.set(cleanEmail, {
+          otp,
+          expiresAt: expiresAt.getTime(),
+          attempts: 0,
+        });
+      }
+    } else {
+      inMemoryOtps.set(cleanEmail, {
+        otp,
+        expiresAt: expiresAt.getTime(),
+        attempts: 0,
+      });
+    }
+
+    // 5. Send Email
+    const recipientName = name ? name.trim() : 'User';
+    const roleLabel = selectedRole === 'clinician' ? 'Clinician' : 'Self User';
+
+    const htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 24px; background-color: #f8fafc; border-radius: 16px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #0f172a; margin: 0; font-size: 22px;">Cognitive Enhancement Support Tool</h2>
+          <p style="color: #64748b; font-size: 13px; margin-top: 4px;">Account Authentication Code</p>
+        </div>
+        <div style="background-color: #ffffff; padding: 30px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+          <p style="color: #334155; font-size: 15px; margin-top: 0;">Hello <strong>${recipientName}</strong>,</p>
+          <p style="color: #475569; font-size: 14px; line-height: 1.6;">
+            Thank you for registering with CEST as a <strong>${roleLabel}</strong>. To authenticate your email and complete your registration, enter this 6-digit verification code:
+          </p>
+          <div style="margin: 28px 0; text-align: center;">
+            <div style="display: inline-block; background-color: #f0fdf4; border: 2px solid #22c55e; border-radius: 12px; padding: 14px 28px; font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #15803d; font-family: monospace;">
+              ${otp}
+            </div>
+            <p style="color: #94a3b8; font-size: 12px; margin-top: 10px;">This code will expire in 10 minutes.</p>
+          </div>
+          <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin-bottom: 0;">
+            If you did not request this verification code, please ignore this email.
+          </p>
+        </div>
+        <div style="text-align: center; margin-top: 20px; color: #94a3b8; font-size: 12px;">
+          &copy; ${new Date().getFullYear()} CEST Platform. Evidence-aligned cognitive tools & clinical support.
+        </div>
+      </div>
+    `;
+
+    try {
+      await sendEmail({
+        email: cleanEmail,
+        subject: `Your CEST Authentication Code: ${otp}`,
+        message: `Hello ${recipientName},\n\nYour 6-digit CEST authentication code is: ${otp}\nThis code will expire in 10 minutes.\n\nIf you did not request this code, you can ignore this email.`,
+        html: htmlContent,
+      });
+
+      console.log(`[CEST Auth] Sent 6-digit OTP code to ${cleanEmail}`);
+
+      return res.status(200).json({
+        success: true,
+        message: 'A 6-digit verification code has been sent to your email.',
+        ...(process.env.NODE_ENV !== 'production' ? { devCode: otp } : {}),
+      });
+    } catch (emailErr) {
+      console.error(`[CEST Auth] Failed to send OTP email: ${emailErr.message}`);
+      return res.status(500).json({
+        success: false,
+        message: `Failed to send email: ${emailErr.message}. Ensure SMTP credentials are configured on your server.`,
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+};
 
 // @desc    Register a new user (Self User or Clinician)
 // @route   POST /api/auth/register
@@ -27,6 +234,7 @@ const registerUser = async (req, res, next) => {
       registrationNumber,
       registeringBody,
       institution,
+      otp,
     } = req.body;
 
     if (!name || !email || !password) {
@@ -41,6 +249,106 @@ const registerUser = async (req, res, next) => {
         success: false,
         message: 'Admin accounts cannot be created via registration',
       });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+
+    // Verify 6-digit OTP unless running automated script tests in NODE_ENV === 'test'
+    if (process.env.NODE_ENV !== 'test') {
+      if (!otp) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide the 6-digit authentication code sent to your email',
+        });
+      }
+
+      const cleanOtp = String(otp).trim();
+
+      if (isDbConnected()) {
+        try {
+          const otpRecord = await Otp.findOne({ email: cleanEmail }).sort({ createdAt: -1 });
+          if (!otpRecord) {
+            return res.status(400).json({
+              success: false,
+              message: 'No authentication code found for this email. Please click Authenticate to receive a code.',
+            });
+          }
+
+          if (new Date() > otpRecord.expiresAt) {
+            await Otp.deleteMany({ email: cleanEmail });
+            return res.status(400).json({
+              success: false,
+              message: 'Authentication code has expired. Please request a new code.',
+            });
+          }
+
+          if (otpRecord.attempts >= 5) {
+            await Otp.deleteMany({ email: cleanEmail });
+            return res.status(400).json({
+              success: false,
+              message: 'Too many incorrect attempts. Please request a new authentication code.',
+            });
+          }
+
+          if (otpRecord.otp !== cleanOtp) {
+            otpRecord.attempts += 1;
+            await otpRecord.save();
+            return res.status(400).json({
+              success: false,
+              message: 'Incorrect 6-digit authentication code. Please check your email and try again.',
+            });
+          }
+
+          // Verified successfully, delete OTP record
+          await Otp.deleteMany({ email: cleanEmail });
+        } catch (dbOtpErr) {
+          // Fallback to in-memory OTP verification if Mongo throws
+          const memOtp = inMemoryOtps.get(cleanEmail);
+          if (!memOtp) {
+            return res.status(400).json({
+              success: false,
+              message: 'No authentication code found for this email. Please click Authenticate to receive a code.',
+            });
+          }
+          if (Date.now() > memOtp.expiresAt) {
+            inMemoryOtps.delete(cleanEmail);
+            return res.status(400).json({
+              success: false,
+              message: 'Authentication code has expired. Please request a new code.',
+            });
+          }
+          if (memOtp.otp !== cleanOtp) {
+            return res.status(400).json({
+              success: false,
+              message: 'Incorrect 6-digit authentication code. Please check your email and try again.',
+            });
+          }
+          inMemoryOtps.delete(cleanEmail);
+        }
+      } else {
+        // Direct in-memory OTP verification
+        const memOtp = inMemoryOtps.get(cleanEmail);
+        if (!memOtp) {
+          return res.status(400).json({
+            success: false,
+            message: 'No authentication code found for this email. Please click Authenticate to receive a code.',
+          });
+        }
+        if (Date.now() > memOtp.expiresAt) {
+          inMemoryOtps.delete(cleanEmail);
+          return res.status(400).json({
+            success: false,
+            message: 'Authentication code has expired. Please request a new code.',
+          });
+        }
+        if (memOtp.otp !== cleanOtp) {
+          return res.status(400).json({
+            success: false,
+            message: 'Incorrect 6-digit authentication code. Please check your email and try again.',
+          });
+        }
+        inMemoryOtps.delete(cleanEmail);
+      }
     }
 
     const selectedRole = role === 'clinician' ? 'clinician' : 'self_user';
@@ -63,23 +371,78 @@ const registerUser = async (req, res, next) => {
       cleanBody = sanitizeRegisteringBody(registeringBody);
     }
 
-    try {
-      // Check if user exists in MongoDB
-      const userExists = await User.findOne({ email: email.toLowerCase() });
-      if (userExists) {
-        return res.status(400).json({
-          success: false,
-          message: 'An account with this email already exists',
-        });
-      }
+    if (isDbConnected()) {
+      try {
+        // Check if user exists in MongoDB
+        const userExists = await User.findOne({ email: cleanEmail });
+        if (userExists) {
+          return res.status(400).json({
+            success: false,
+            message: 'An account with this email already exists',
+          });
+        }
 
-      // Check unique registration number if provided
-      if (selectedRole === 'clinician' && cleanRegNum) {
-        const duplicate = await User.findOne({
-          registrationNumber: cleanRegNum,
-          registeringBody: cleanBody || { $in: ['', null, undefined] },
+        // Check unique registration number if provided
+        if (selectedRole === 'clinician' && cleanRegNum) {
+          const duplicate = await User.findOne({
+            registrationNumber: cleanRegNum,
+            registeringBody: cleanBody || { $in: ['', null, undefined] },
+          });
+          if (duplicate) {
+            return res.status(400).json({
+              success: false,
+              message:
+                'This registration number is already linked to another account. Contact support.',
+            });
+          }
+        }
+
+        // Create user in DB
+        const user = await User.create({
+          name,
+          email: cleanEmail,
+          password,
+          role: selectedRole,
+          title: title || '',
+          specialization: specialization || '',
+          licenseNumber: cleanRegNum || licenseNumber || '',
+          registrationNumber: cleanRegNum || undefined,
+          registeringBody: cleanBody || undefined,
+          verificationStatus: 'unverified',
+          verifiedAt: null,
+          institution: institution || '',
+          isVerified: true,
         });
-        if (duplicate) {
+
+        const token = generateToken(user._id, user.role);
+
+        return res.status(201).json({
+          success: true,
+          token,
+          user: {
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            title: user.title,
+            specialization: user.specialization,
+            licenseNumber: user.licenseNumber,
+            registrationNumber: user.registrationNumber || '',
+            registeringBody: user.registeringBody || '',
+            verificationStatus: user.verificationStatus || 'unverified',
+            verifiedAt: user.verifiedAt || null,
+            rejectionReason: user.rejectionReason || '',
+            verificationRequestedAt: user.verificationRequestedAt || null,
+            institution: user.institution,
+            isVerified: user.isVerified,
+          },
+        });
+      } catch (dbErr) {
+        if (
+          dbErr.code === 11000 &&
+          (dbErr.keyPattern?.registrationNumber ||
+            JSON.stringify(dbErr).includes('registrationNumber'))
+        ) {
           return res.status(400).json({
             success: false,
             message:
@@ -87,125 +450,73 @@ const registerUser = async (req, res, next) => {
           });
         }
       }
+    }
 
-      // Create user in DB
-      const user = await User.create({
-        name,
-        email: email.toLowerCase(),
-        password,
-        role: selectedRole,
-        title: title || '',
-        specialization: specialization || '',
-        licenseNumber: cleanRegNum || licenseNumber || '',
-        registrationNumber: cleanRegNum || undefined,
-        registeringBody: cleanBody || undefined,
-        verificationStatus: 'unverified',
-        verifiedAt: null,
-        institution: institution || '',
+    // Fallback for memory execution if DB is offline or throws
+    const existing = inMemoryUsers.find((u) => u.email === cleanEmail);
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: 'An account with this email already exists',
       });
+    }
 
-      const token = generateToken(user._id, user.role);
-
-      return res.status(201).json({
-        success: true,
-        token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          title: user.title,
-          specialization: user.specialization,
-          licenseNumber: user.licenseNumber,
-          registrationNumber: user.registrationNumber || '',
-          registeringBody: user.registeringBody || '',
-          verificationStatus: user.verificationStatus || 'unverified',
-          verifiedAt: user.verifiedAt || null,
-          rejectionReason: user.rejectionReason || '',
-          verificationRequestedAt: user.verificationRequestedAt || null,
-          institution: user.institution,
-          isVerified: user.isVerified,
-        },
-      });
-    } catch (dbErr) {
-      if (
-        dbErr.code === 11000 &&
-        (dbErr.keyPattern?.registrationNumber ||
-          JSON.stringify(dbErr).includes('registrationNumber'))
-      ) {
+    if (selectedRole === 'clinician' && cleanRegNum) {
+      const memDup = inMemoryUsers.find(
+        (u) =>
+          u.registrationNumber === cleanRegNum &&
+          (u.registeringBody || '') === cleanBody
+      );
+      if (memDup) {
         return res.status(400).json({
           success: false,
           message:
             'This registration number is already linked to another account. Contact support.',
         });
       }
-
-      // Fallback for memory execution if DB is offline
-      const existing = inMemoryUsers.find((u) => u.email === email.toLowerCase());
-      if (existing) {
-        return res.status(400).json({
-          success: false,
-          message: 'An account with this email already exists',
-        });
-      }
-
-      if (selectedRole === 'clinician' && cleanRegNum) {
-        const memDup = inMemoryUsers.find(
-          (u) =>
-            u.registrationNumber === cleanRegNum &&
-            (u.registeringBody || '') === cleanBody
-        );
-        if (memDup) {
-          return res.status(400).json({
-            success: false,
-            message:
-              'This registration number is already linked to another account. Contact support.',
-          });
-        }
-      }
-
-      const mockId = 'mem_' + Date.now();
-      const mockUser = {
-        id: mockId,
-        _id: mockId,
-        name,
-        email: email.toLowerCase(),
-        password, // In real DB this is hashed
-        role: selectedRole,
-        title: title || '',
-        specialization: specialization || '',
-        licenseNumber: cleanRegNum || licenseNumber || '',
-        registrationNumber: cleanRegNum || '',
-        registeringBody: cleanBody || '',
-        verificationStatus: 'unverified',
-        verifiedAt: null,
-        institution: institution || '',
-        isVerified: true,
-      };
-      inMemoryUsers.push(mockUser);
-
-      const token = generateToken(mockUser.id, mockUser.role);
-
-      return res.status(201).json({
-        success: true,
-        token,
-        user: {
-          id: mockUser.id,
-          name: mockUser.name,
-          email: mockUser.email,
-          role: mockUser.role,
-          title: mockUser.title,
-          specialization: mockUser.specialization,
-          licenseNumber: mockUser.licenseNumber,
-          registrationNumber: mockUser.registrationNumber,
-          registeringBody: mockUser.registeringBody,
-          verificationStatus: mockUser.verificationStatus,
-          verifiedAt: mockUser.verifiedAt,
-          institution: mockUser.institution,
-          isVerified: mockUser.isVerified,
-        },
-      });
     }
+
+    const mockId = 'mem_' + Date.now();
+    const mockUser = {
+      id: mockId,
+      _id: mockId,
+      name,
+      email: cleanEmail,
+      password, // In real DB this is hashed
+      role: selectedRole,
+      title: title || '',
+      specialization: specialization || '',
+      licenseNumber: cleanRegNum || licenseNumber || '',
+      registrationNumber: cleanRegNum || '',
+      registeringBody: cleanBody || '',
+      verificationStatus: 'unverified',
+      verifiedAt: null,
+      institution: institution || '',
+      isVerified: true,
+    };
+    inMemoryUsers.push(mockUser);
+
+    const token = generateToken(mockUser.id, mockUser.role);
+
+    return res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: mockUser.id,
+        name: mockUser.name,
+        email: mockUser.email,
+        role: mockUser.role,
+        title: mockUser.title,
+        specialization: mockUser.specialization,
+        licenseNumber: mockUser.licenseNumber,
+        registrationNumber: mockUser.registrationNumber,
+        registeringBody: mockUser.registeringBody,
+        verificationStatus: mockUser.verificationStatus,
+        verifiedAt: mockUser.verifiedAt,
+        institution: mockUser.institution,
+        isVerified: mockUser.isVerified,
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -717,6 +1028,7 @@ const verifyEmail = async (req, res, next) => {
 };
 
 module.exports = {
+  sendRegistrationOtp,
   registerUser,
   loginUser,
   googleAuth,
