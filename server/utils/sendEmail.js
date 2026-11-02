@@ -4,25 +4,14 @@ const nodemailer = require('nodemailer');
  * Creates and returns a configured Nodemailer transporter using env variables
  */
 const createTransporter = () => {
-  const service = process.env.SMTP_SERVICE?.trim();
-  const host = process.env.SMTP_HOST?.trim() || (service === 'gmail' ? 'smtp.gmail.com' : undefined);
-  const port = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : (host === 'smtp.gmail.com' ? 465 : 587);
+  const host = process.env.SMTP_HOST?.trim();
+  const port = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587;
   const user = process.env.SMTP_USER?.trim();
   const pass = process.env.SMTP_PASS?.trim();
-  const isSecure = process.env.SMTP_SECURE !== undefined ? process.env.SMTP_SECURE === 'true' : port === 465;
+  const isSecure = process.env.SMTP_SECURE === 'true' || port === 465;
 
-  if ((!host && !service) || !user || !pass) {
+  if (!host || !user || !pass) {
     return null;
-  }
-
-  if (service || host === 'smtp.gmail.com') {
-    return nodemailer.createTransport({
-      service: service || 'gmail',
-      auth: {
-        user,
-        pass,
-      },
-    });
   }
 
   return nodemailer.createTransport({

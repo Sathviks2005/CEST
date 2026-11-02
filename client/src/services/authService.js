@@ -11,11 +11,6 @@ export const authService = {
     return response.data;
   },
 
-  sendOtp: async (data) => {
-    const response = await API.post('/auth/send-otp', data);
-    return response.data;
-  },
-
   register: async (userData) => {
     const response = await API.post('/auth/register', userData);
     return response.data;
